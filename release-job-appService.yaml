@@ -1,0 +1,65 @@
+# App Service doesn't have a direct "Job" equivalent like ACA. 
+# For WebJobs or similar, we usually deploy to the same App Service or a dedicated one.
+# This template assumes we are deploying to an App Service that might be used for background tasks.
+parameters:
+  - name: lzServiceConnection
+    type: string
+  - name: workloadResourceGroup
+    type: string
+  - name: containerRegistry
+    type: string
+  - name: repositoryName
+    type: string
+  - name: imageTag
+    type: string
+  - name: jobName
+    type: string
+  - name: envVars
+    type: string
+    default: ''
+
+jobs:
+  - job: Deploy
+    displayName: 'Deploy to App Service (Job)'
+    steps:
+      - task: AzureCLI@2
+        displayName: 'Update App Service'
+        inputs:
+          azureSubscription: '${{ parameters.lzServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -e
+            FULL_IMAGE="${{ parameters.containerRegistry }}.azurecr.io/${{ parameters.repositoryName }}:${{ parameters.imageTag }}"
+            
+            echo "Resolving full App Service name (Job) for prefix: ${{ parameters.jobName }} in RG: ${{ parameters.workloadResourceGroup }}"
+            
+            # Find the Web App that starts with the provided jobName prefix
+            WEBAPP_NAME=$(az webapp list --resource-group ${{ parameters.workloadResourceGroup }} --query "[?starts_with(name, '${{ parameters.jobName }}')].name" -o tsv | head -n 1)
+            
+            if [ -z "$WEBAPP_NAME" ]; then
+              echo "Error: No App Service found starting with prefix '${{ parameters.jobName }}' in resource group '${{ parameters.workloadResourceGroup }}'."
+              exit 1
+            fi
+            
+            echo "Found App Service: $WEBAPP_NAME"
+            
+            # Update the app service container image
+            az webapp config container set \
+              --name "$WEBAPP_NAME" \
+              --resource-group ${{ parameters.workloadResourceGroup }} \
+              --docker-custom-image-name "$FULL_IMAGE" \
+              --docker-registry-server-url "https://${{ parameters.containerRegistry }}.azurecr.io"
+
+            # Set environment variables if provided
+            if [ -n "${{ parameters.envVars }}" ]; then
+              az webapp config appsettings set \
+                --name "$WEBAPP_NAME" \
+                --resource-group ${{ parameters.workloadResourceGroup }} \
+                --settings ${{ parameters.envVars }} LAST_DEPLOYED=$(date +%Y%m%d-%H%M%S)
+            else
+              az webapp config appsettings set \
+                --name "$WEBAPP_NAME" \
+                --resource-group ${{ parameters.workloadResourceGroup }} \
+                --settings LAST_DEPLOYED=$(date +%Y%m%d-%H%M%S)
+            fi

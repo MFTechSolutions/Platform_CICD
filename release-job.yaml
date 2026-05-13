@@ -1,0 +1,39 @@
+# Container Apps *Job* deploy. For long-running apps use release.yaml.
+parameters:
+  - name: lzServiceConnection
+    type: string
+  - name: workloadResourceGroup
+    type: string
+  - name: containerRegistry
+    type: string
+  - name: repositoryName
+    type: string
+  - name: imageTag
+    type: string
+  - name: jobName
+    type: string
+  - name: envVars
+    type: string
+    default: ''
+
+jobs:
+  - job: Deploy
+    displayName: 'Deploy to ACA Job'
+    steps:
+      - task: AzureCLI@2
+        displayName: 'Update Container Apps Job'
+        inputs:
+          azureSubscription: '${{ parameters.lzServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -e
+            FULL_IMAGE="${{ parameters.containerRegistry }}.azurecr.io/${{ parameters.repositoryName }}:${{ parameters.imageTag }}"
+
+            echo "Updating Container Apps Job: ${{ parameters.jobName }} in RG: ${{ parameters.workloadResourceGroup }}"
+
+            az containerapp job update \
+              --name ${{ parameters.jobName }} \
+              --resource-group ${{ parameters.workloadResourceGroup }} \
+              --image "$FULL_IMAGE" \
+              --set-env-vars "LAST_DEPLOYED=$(date +%Y%m%d-%H%M%S)" ${{ parameters.envVars }}

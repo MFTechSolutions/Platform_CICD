@@ -1,0 +1,39 @@
+parameters:
+  - name: acrName
+    type: string
+  - name: hubServiceConnection
+    type: string
+  - name: repositoryName
+    type: string
+  - name: imageTag
+    type: string
+  - name: dockerfilePath
+    type: string
+  - name: buildContext
+    type: string
+
+jobs:
+  - job: Build
+    displayName: 'Build and Push'
+    steps:
+      - task: AzureCLI@2
+        displayName: Login to ACR
+        inputs:
+          azureSubscription: '${{ parameters.hubServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            ACR_SERVER=$(az acr show -n ${{ parameters.acrName }} --query loginServer -o tsv)
+            echo "##vso[task.setvariable variable=acrLoginServer]$ACR_SERVER"
+            TOKEN=$(az acr login -n ${{ parameters.acrName }} --expose-token --query accessToken -o tsv)
+            echo "$TOKEN" | sudo docker login "$ACR_SERVER" -u 00000000-0000-0000-0000-000000000000 --password-stdin
+
+      - task: Bash@3
+        displayName: Build and push image
+        inputs:
+          targetType: inline
+          script: |
+            set -e
+            IMAGE="$(acrLoginServer)/${{ parameters.repositoryName }}:${{ parameters.imageTag }}"
+            sudo docker build --no-cache --platform linux/amd64 -t "$IMAGE" -f ${{ parameters.dockerfilePath }} ${{ parameters.buildContext }}
+            sudo docker push "$IMAGE"

@@ -1,0 +1,40 @@
+parameters:
+  - name: lzServiceConnection
+    type: string
+  - name: workloadResourceGroup
+    type: string
+  - name: containerRegistry
+    type: string
+  - name: repositoryName
+    type: string
+  - name: imageTag
+    type: string
+  - name: appName
+    type: string
+  - name: envVars
+    type: string
+    default: ''
+
+jobs:
+  - job: Deploy
+    displayName: 'Deploy to ACA'
+    steps:
+      - task: AzureCLI@2
+        displayName: 'Update Container App'
+        inputs:
+          azureSubscription: '${{ parameters.lzServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -e
+            # Construct the full image name using the ACR name directly
+            FULL_IMAGE="${{ parameters.containerRegistry }}.azurecr.io/${{ parameters.repositoryName }}:${{ parameters.imageTag }}"
+            
+            echo "Updating Container App: ${{ parameters.appName }} in RG: ${{ parameters.workloadResourceGroup }}"
+            
+            # Update the container app
+            az containerapp update \
+              --name ${{ parameters.appName }} \
+              --resource-group ${{ parameters.workloadResourceGroup }} \
+              --image "$FULL_IMAGE" \
+              --set-env-vars "LAST_DEPLOYED=$(date +%Y%m%d-%H%M%S)" ${{ parameters.envVars }}
