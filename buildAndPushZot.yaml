@@ -1,0 +1,136 @@
+# Build a linux/amd64 image and push it to the in-cluster Zot registry.
+# Docker on the agent cannot push to the cluster DNS name, so the image is
+# copied with `arkipell push` (docker save + skopeo from a pod). Zot is HTTP
+# and has no login. The release stage then runs `arkipell set image`.
+parameters:
+  - name: imageName
+    type: string
+  - name: imageTag
+    type: string
+  - name: dockerfilePath
+    type: string
+  - name: buildContext
+    type: string
+  - name: lzServiceConnection
+    type: string
+  - name: aksClusterName
+    type: string
+  - name: aksResourceGroup
+    type: string
+  - name: zotRegistry
+    type: string
+    default: zot.arkipell-zot.svc.cluster.local:5000
+  - name: goVersion
+    type: string
+    default: '1.26.5'
+  - name: enableTrivyScan
+    type: boolean
+    default: false
+  - name: trivySkipFiles
+    type: string
+    default: '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/*.min.js,**/*.bundle.js,**/*.map,**/*.log,**/*.cache'
+  - name: trivyFilesystemTarget
+    type: string
+    default: '.'
+  - name: trivyVersion
+    type: string
+    default: 'latest'
+  - name: trivyScanners
+    type: string
+    default: 'misconfig,vuln,secret'
+  - name: trivySeverities
+    type: string
+    default: 'LOW, MEDIUM, HIGH, CRITICAL'
+  - name: trivyIgnoreUnfixed
+    type: boolean
+    default: true
+  - name: trivyContinueOnError
+    type: boolean
+    default: true
+
+jobs:
+  - job: Build
+    displayName: 'Build and push to Zot'
+    steps:
+      - checkout: self
+        path: Workload
+      - checkout: Arkipell
+        path: Arkipell
+
+      - ${{ if eq(parameters.enableTrivyScan, true) }}:
+        - task: trivy@2
+          continueOnError: ${{ parameters.trivyContinueOnError }}
+          displayName: 'Filesystem Scan'
+          inputs:
+            version: '${{ parameters.trivyVersion }}'
+            type: 'filesystem'
+            target: '${{ parameters.trivyFilesystemTarget }}'
+            scanners: '${{ parameters.trivyScanners }}'
+            ignoreUnfixed: ${{ parameters.trivyIgnoreUnfixed }}
+            ignoreScanErrors: true
+            reports: 'github, html, junit'
+            publish: true
+            severities: '${{ parameters.trivySeverities }}'
+            skipFiles: '${{ parameters.trivySkipFiles }}'
+
+      - task: GoTool@0
+        displayName: Install Go
+        inputs:
+          version: '${{ parameters.goVersion }}'
+
+      - task: AzureCLI@2
+        displayName: Build and push image to Zot
+        inputs:
+          azureSubscription: '${{ parameters.lzServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+            if ! docker info >/dev/null 2>&1; then
+              sudo chmod 666 /var/run/docker.sock
+            fi
+
+            WORKLOAD="$(Pipeline.Workspace)/Workload"
+            ARKIPELL="$(Pipeline.Workspace)/Arkipell"
+            LOCAL_IMAGE="${{ parameters.imageName }}:${{ parameters.imageTag }}"
+            ZOT_IMAGE="${{ parameters.zotRegistry }}/${{ parameters.imageName }}:${{ parameters.imageTag }}"
+
+            docker build --no-cache --platform linux/amd64 \
+              -t "$LOCAL_IMAGE" \
+              -f "$WORKLOAD/${{ parameters.dockerfilePath }}" \
+              "$WORKLOAD/${{ parameters.buildContext }}"
+
+            if ! command -v kubectl >/dev/null 2>&1; then
+              KUBECTL_DIR="$(mktemp -d)"
+              az aks install-cli \
+                --install-location "$KUBECTL_DIR/kubectl" \
+                --kubelogin-install-location "$KUBECTL_DIR/kubelogin"
+              export PATH="$KUBECTL_DIR:$PATH"
+            fi
+            az aks get-credentials \
+              --resource-group "${{ parameters.aksResourceGroup }}" \
+              --name "${{ parameters.aksClusterName }}" \
+              --admin \
+              --overwrite-existing \
+              --only-show-errors
+
+            BIN_DIR="$(mktemp -d)"
+            (
+              cd "$ARKIPELL"
+              GOBIN="$BIN_DIR" GOTOOLCHAIN="${GOTOOLCHAIN:-auto}" go install ./cmd/arkipell
+            )
+            "$BIN_DIR/arkipell" push --image "$LOCAL_IMAGE"
+            echo "Pushed http://$ZOT_IMAGE"
+
+      - ${{ if eq(parameters.enableTrivyScan, true) }}:
+        - task: trivy@2
+          continueOnError: ${{ parameters.trivyContinueOnError }}
+          displayName: 'Container Image Scan'
+          inputs:
+            method: 'system'
+            type: 'image'
+            target: '${{ parameters.imageName }}:${{ parameters.imageTag }}'
+            scanners: '${{ parameters.trivyScanners }}'
+            severities: '${{ parameters.trivySeverities }}'
+            ignoreUnfixed: ${{ parameters.trivyIgnoreUnfixed }}
+            skipFiles: '${{ parameters.trivySkipFiles }}'
